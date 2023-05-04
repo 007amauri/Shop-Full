@@ -1,6 +1,8 @@
-#pragma semicolon 1
-
 #include <sourcemod>
+#include <sdktools>
+#include <sdkhooks>
+
+#pragma semicolon 1
 #include <shop>
 
 #include <morecolors>
@@ -27,11 +29,12 @@ public Plugin:myinfo =
 public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 {
 	MarkNativeAsOptional("GetUserMessageType");
+	return APLRes_Success;
 }
 
 public OnPluginStart() 
 {
-	CreateConVar("sm_shop_credits_version", PLUGIN_VERSION, "Money distributor version.", FCVAR_PLUGIN|FCVAR_SPONLY|FCVAR_REPLICATED|FCVAR_NOTIFY|FCVAR_CHEAT|FCVAR_DONTRECORD);
+	CreateConVar("sm_shop_credits_version", PLUGIN_VERSION, "Money distributor version.", 0|FCVAR_SPONLY|FCVAR_REPLICATED|FCVAR_NOTIFY|FCVAR_CHEAT|FCVAR_DONTRECORD);
 	
 	g_hInterval = CreateConVar("sm_shop_credits_interval", "60.0", "The interval of timer. Less than 1 to disable", 0, true, 0.0, false);
 	g_hMoneyPerTick = CreateConVar("sm_shop_credits_amount", "5", "Amount of credits all players get every time.", 0, true, 1.0);

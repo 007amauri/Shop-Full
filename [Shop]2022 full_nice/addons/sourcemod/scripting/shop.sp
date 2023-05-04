@@ -2,56 +2,68 @@
 
 #include <sourcemod>
 #include <shop>
+#undef REQUIRE_EXTENSIONS
+#tryinclude <SteamWorks>
+#define REQUIRE_EXTENSIONS
 
-#define MORE_COLORS
+#define SHOP_VERSION "3.0E8"
+#define SHOP_MYSQL_CHARSET "utf8mb4"
 
-#if defined MORE_COLORS
- #include <morecolors>
- #define UPDATE_URL	"http://black-clan.kz/froz/plugins/autoupdate/shop/morecolors/updates.txt"
-#else
- #include <colors>
- #define UPDATE_URL	"http://black-clan.kz/froz/plugins/autoupdate/shop/colors/updates.txt"
-#endif
+#pragma newdecls required
+EngineVersion Engine_Version = Engine_Unknown;
 
-/*#undef REQUIRE_PLUGIN
-#tryinclude <updater>
-#define REQUIRE_PLUGIN*/
+int g_iMaxPageItems = 10;
 
-new global_timer;
-new Handle:panel_info;
+int global_timer;
+Panel panel_info;
+ArrayList g_hSortArray;
 
-new ShopMenu:iClMenuId[MAXPLAYERS+1];
-new iClCategoryId[MAXPLAYERS+1];
-new iClItemId[MAXPLAYERS+1];
-new iPos[MAXPLAYERS+1];
-new bool:bInv[MAXPLAYERS+1];
+ShopMenu iClMenuId[MAXPLAYERS+1];
+int iClCategoryId[MAXPLAYERS+1];
+int iClItemId[MAXPLAYERS+1];
+int iPos[MAXPLAYERS+1];
+bool bInv[MAXPLAYERS+1];
 
-new String:g_sChatCommand[24];
-new String:g_sDbPrefix[12] = "shop_";
-new bool:is_started;
+char g_sChatCommand[24];
+char g_sDbPrefix[12] = "shop_";
+bool is_started;
 
-new Handle:g_hAdminFlags, g_iAdminFlags;
-new Handle:g_hItemTransfer, g_iItemTransfer;
+ConVar g_hAdminFlags;
+int g_iAdminFlags;
+ConVar g_hItemTransfer;
+int g_iItemTransfer;
+ConVar g_hConfirmBuy;
+bool g_bConfirmBuy;
+ConVar g_hConfirmSell;
+bool g_bConfirmSell;
+ConVar g_hConfirmTryLuck;
+bool g_bConfirmTryLuck;
 
+ConVar g_hHideCategoriesItemsCount;
+
+#include "shop/colors.sp"
 #include "shop/admin.sp"
 #include "shop/commands.sp"
 #include "shop/db.sp"
 #include "shop/forwards.sp"
-#include "shop/functions.sp"
 #include "shop/helpers.sp"
+#include "shop/functions.sp"
 #include "shop/item_manager.sp"
 #include "shop/player_manager.sp"
+#if defined _SteamWorks_Included
+#include "shop/stats.sp"
+#endif
 
-public Plugin:myinfo =
+public Plugin myinfo =
 {
 	name = "[Shop] Core",
 	description = "An advanced in game market",
-	author = "FrozDark",
+	author = "Shop Core Team",
 	version = SHOP_VERSION,
 	url = "http://www.hlmod.ru/"
 };
 
-public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
 	CreateNative("Shop_IsStarted", Native_IsStarted);
 	CreateNative("Shop_UnregisterMe", Native_UnregisterMe);
@@ -60,7 +72,7 @@ public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 	CreateNative("Shop_ShowCategory", Native_ShowCategory);
 	CreateNative("Shop_ShowInventory", Native_ShowInventory);
 	CreateNative("Shop_ShowItemsOfCategory", Native_ShowItemsOfCategory);
-	
+
 	Admin_CreateNatives();
 	DB_CreateNatives();
 	Functions_CreateNatives();
@@ -69,22 +81,39 @@ public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 	
 	RegPluginLibrary("shop");
 	MarkNativeAsOptional("GetUserMessageType");
+	MarkNativeAsOptional("SQL_SetCharset");
+
+	MarkNativeAsOptional("GuessSDKVersion"); 
+	MarkNativeAsOptional("GetEngineVersion");
+	MarkNativeAsOptional("GetUserMessageType");
+	MarkNativeAsOptional("BfWriteByte");
+	MarkNativeAsOptional("BfWriteString");
+	MarkNativeAsOptional("PbSetInt");
+	MarkNativeAsOptional("PbSetBool");
+	MarkNativeAsOptional("PbSetString");
+	MarkNativeAsOptional("PbAddString");
+
+	return APLRes_Success;
 }
 
-public Native_IsStarted(Handle:plugin, params)
+public int Native_IsStarted(Handle plugin, int params)
 {
 	return IsStarted();
 }
 
-public Native_UnregisterMe(Handle:plugin, params)
+public int Native_UnregisterMe(Handle plugin, int params)
 {
 	ItemManager_UnregisterMe(plugin);
+	Functions_UnregisterMe(plugin);
+	Admin_UnregisterMe(plugin);
+
+	return 0;
 }
 
-public Native_ShowItemPanel(Handle:plugin, params)
+public int Native_ShowItemPanel(Handle plugin, int params)
 {
-	new client = GetNativeCell(1);
-	decl String:error[64];
+	int client = GetNativeCell(1);
+	char error[64];
 	if (!CheckClient(client, error, sizeof(error)))
 	{
 		ThrowNativeError(1, error);
@@ -93,10 +122,10 @@ public Native_ShowItemPanel(Handle:plugin, params)
 	return ShowItemInfo(client, GetNativeCell(2));
 }
 
-public Native_OpenMainMenu(Handle:plugin, params)
+public int Native_OpenMainMenu(Handle plugin, int params)
 {
-	new client = GetNativeCell(1);
-	decl String:error[64];
+	int client = GetNativeCell(1);
+	char error[64];
 	if (!CheckClient(client, error, sizeof(error)))
 	{
 		ThrowNativeError(1, error);
@@ -106,12 +135,14 @@ public Native_OpenMainMenu(Handle:plugin, params)
 		ThrowNativeError(1, "Client index %d is not authorized in the shop!", client);
 	}
 	ShowMainMenu(client);
+
+	return 0;
 }
 
-public Native_ShowCategory(Handle:plugin, params)
+public int Native_ShowCategory(Handle plugin, int params)
 {
-	new client = GetNativeCell(1);
-	decl String:error[64];
+	int client = GetNativeCell(1);
+	char error[64];
 	if (!CheckClient(client, error, sizeof(error)))
 	{
 		ThrowNativeError(1, error);
@@ -123,10 +154,10 @@ public Native_ShowCategory(Handle:plugin, params)
 	return ShowCategories(client);
 }
 
-public Native_ShowInventory(Handle:plugin, params)
+public int Native_ShowInventory(Handle plugin, int params)
 {
-	new client = GetNativeCell(1);
-	decl String:error[64];
+	int client = GetNativeCell(1);
+	char error[64];
 	if (!CheckClient(client, error, sizeof(error)))
 	{
 		ThrowNativeError(1, error);
@@ -138,10 +169,10 @@ public Native_ShowInventory(Handle:plugin, params)
 	return ShowInventory(client);
 }
 
-public Native_ShowItemsOfCategory(Handle:plugin, params)
+public int Native_ShowItemsOfCategory(Handle plugin, int params)
 {
-	new client = GetNativeCell(1);
-	decl String:error[64];
+	int client = GetNativeCell(1);
+	char error[64];
 	if (!CheckClient(client, error, sizeof(error)))
 	{
 		ThrowNativeError(1, error);
@@ -150,16 +181,19 @@ public Native_ShowItemsOfCategory(Handle:plugin, params)
 	{
 		ThrowNativeError(1, "Client index %d is not authorized in the shop!", client);
 	}
-	new category_id = GetNativeCell(2);
+	int category_id = GetNativeCell(2);
 	if (!ItemManager_IsValidCategory(category_id))
 	{
 		ThrowNativeError(1, "Category id %d is invalid!", category_id);
 	}
-	return ShowItemsOfCategory(client, category_id, GetNativeCell(3));
+	return ShowItemsOfCategory(client, category_id, GetNativeCell(3) ? Menu_Inventory : Menu_Buy);
 }
 
-public OnPluginStart()
+public void OnPluginStart()
 {
+	g_iMaxPageItems = GetMaxPageItems(GetMenuStyleHandle(MenuStyle_Default));
+
+	InitChat();
 	DB_OnPluginStart();
 	Forward_OnPluginStart();
 	Functions_OnPluginStart();
@@ -177,67 +211,63 @@ public OnPluginStart()
 	AddCommandListener(Command_Say, "say_team");
 	
 	CreateConfigs();
+	Engine_Version = GetEngineVersion();
 }
 
-/*public OnAllPluginsLoaded()
-{
-	#if defined _updater_included
-	if (LibraryExists("updater"))
-	{
-		Updater_AddPlugin(UPDATE_URL);
-	}
-	#endif
-}
-
-public OnLibraryAdded(const String:name[])
-{
-	#if defined _updater_included
-	if (!strcmp(name, "updater"))
-	{
-        Updater_AddPlugin(UPDATE_URL);
-	}
-	#endif
-}*/
-
-public OnPluginEnd()
+public void OnPluginEnd()
 {
 	PlayerManager_OnPluginEnd();
 	ItemManager_OnPluginEnd();
 }
 
-public Action:OnEverySecond(Handle:timer)
+public Action OnEverySecond(Handle timer)
 {
 	global_timer++;
+	return Plugin_Continue;
 }
 
-CreateConfigs()
+void CreateConfigs()
 {
-	CreateConVar("sm_advanced_shop_version", SHOP_VERSION, "Shop plugin version", FCVAR_PLUGIN|FCVAR_SPONLY|FCVAR_REPLICATED|FCVAR_NOTIFY|FCVAR_CHEAT|FCVAR_DONTRECORD);
+	CreateConVar("sm_advanced_shop_version", SHOP_VERSION, "Shop plugin version", FCVAR_SPONLY|FCVAR_REPLICATED|FCVAR_NOTIFY|FCVAR_CHEAT|FCVAR_DONTRECORD);
 	
-	decl String:buffer[PLATFORM_MAX_PATH];
+	char sBuffer[PLATFORM_MAX_PATH];
 	g_hAdminFlags = CreateConVar("sm_shop_admin_flags", "z", "Set flags for admin panel access. Set several flags if necessary. Ex: \"abcz\"");
-	GetConVarString(g_hAdminFlags, buffer, sizeof(buffer));
-	g_iAdminFlags = ReadFlagString(buffer);
-	HookConVarChange(g_hAdminFlags, OnConVarChange);
+	g_hAdminFlags.GetString(sBuffer, sizeof(sBuffer));
+	g_iAdminFlags = ReadFlagString(sBuffer);
+	g_hAdminFlags.AddChangeHook(OnConVarChange);
 	
 	g_hItemTransfer = CreateConVar("sm_shop_item_transfer_credits", "500", "How many credits an item transfer cost. Set -1 to disable the feature", 0, true, -1.0);
-	g_iItemTransfer = GetConVarInt(g_hItemTransfer);
-	HookConVarChange(g_hItemTransfer, OnConVarChange);
+	g_iItemTransfer = g_hItemTransfer.IntValue;
+	g_hItemTransfer.AddChangeHook(OnConVarChange);
 	
-	new Handle:kv_settings = CreateKeyValues("Settings");
-	Shop_GetCfgFile(buffer, sizeof(buffer), "settings.txt");
-	FileToKeyValues(kv_settings, buffer);
+	g_hHideCategoriesItemsCount = CreateConVar("sm_shop_category_items_hideamount", "0", "Hide amount of items in category", 0, true, 0.0, true, 1.0);
+
+	g_hConfirmBuy = CreateConVar("sm_shop_confirm_buy", "1", "Enable confirm item purchase menu or not, Set this to 0 the client will purchase instantly after press buy button.", 0, true, 0.0, true, 1.0);
+	g_bConfirmBuy = g_hConfirmBuy.BoolValue;
+	g_hConfirmBuy.AddChangeHook(OnConVarChange);
+
+	g_hConfirmSell = CreateConVar("sm_shop_confirm_sell", "1", "Enable confirm item selling menu or not, Set this to 0 the client will sell item instantly after press sell button.", 0, true, 0.0, true, 1.0);
+	g_bConfirmSell = g_hConfirmSell.BoolValue;
+	g_hConfirmSell.AddChangeHook(OnConVarChange);
+
+	g_hConfirmTryLuck = CreateConVar("sm_shop_confirm_tryluck", "1", "Enable confirm try luck menu or not, Set this to 0 the client will try a luck instantly after press a button.", 0, true, 0.0, true, 1.0);
+	g_bConfirmTryLuck = g_hConfirmTryLuck.BoolValue;
+	g_hConfirmTryLuck.AddChangeHook(OnConVarChange);
+	
+	KeyValues kv_settings = new KeyValues("Settings");
+	Shop_GetCfgFile(sBuffer, sizeof(sBuffer), "settings.txt");
+	kv_settings.ImportFromFile(sBuffer);
 	
 	Admin_OnSettingsLoad(kv_settings);
 	DB_OnSettingsLoad(kv_settings);
 	Commands_OnSettingsLoad(kv_settings);
 	
-	CloseHandle(kv_settings);
+	delete kv_settings;
 	
 	AutoExecConfig(true, "shop", "shop");
 }
 
-public OnConVarChange(Handle:convar, const String:oldValue[], const String:newValue[])
+public void OnConVarChange(ConVar convar, const char[] oldValue, const char[] newValue)
 {
 	if (convar == g_hAdminFlags)
 	{
@@ -245,105 +275,161 @@ public OnConVarChange(Handle:convar, const String:oldValue[], const String:newVa
 	}
 	else if (convar == g_hItemTransfer)
 	{
-		g_iItemTransfer = StringToInt(newValue);
+		g_iItemTransfer = convar.IntValue;
+	}
+	else if (convar == g_hConfirmBuy)
+	{
+		g_bConfirmBuy = convar.BoolValue;
+	}
+	else if (convar == g_hConfirmSell)
+	{
+		g_bConfirmSell = convar.BoolValue;
+	}
+	else
+	{
+		g_bConfirmTryLuck = convar.BoolValue;
 	}
 }
 
-public OnMapStart()
+public void OnMapStart()
 {
+#if defined _SteamWorks_Included
+	// Stats work
+	if (LibraryExists("SteamWorks"))
+		SteamWorks_SteamServersConnected();
+#endif
+
 	DB_OnMapStart();
 	
-	if (panel_info != INVALID_HANDLE)
+	if (panel_info != null)
 	{
-		CloseHandle(panel_info);
-		panel_info = INVALID_HANDLE;
+		delete panel_info;
+		panel_info = null;
 	}
 	
-	decl String:buffer[PLATFORM_MAX_PATH];
-	Shop_GetCfgFile(buffer, sizeof(buffer), "shop_info.txt");
-	
-	new Handle:file = OpenFile(buffer, "r");
-	if (file != INVALID_HANDLE)
+	if (g_hSortArray != null)
 	{
-		panel_info = CreatePanel();
-		
-		while (!IsEndOfFile(file))
+		delete g_hSortArray;
+		g_hSortArray = null;
+	}
+	
+	char sBuffer[PLATFORM_MAX_PATH];
+	Shop_GetCfgFile(sBuffer, sizeof(sBuffer), "shop_info.txt");
+	
+	File hFile = OpenFile(sBuffer, "r");
+	if (hFile != null)
+	{
+		if (hFile.ReadLine(sBuffer, sizeof(sBuffer)))
 		{
-			if (!ReadFileLine(file, buffer, sizeof(buffer))) continue;
-			
-			if (buffer[0])
+			if (sBuffer[0])
 			{
-				DrawPanelText(panel_info, buffer);
+				panel_info = new Panel();
+				panel_info.DrawText(sBuffer);
+		
+				while (!hFile.EndOfFile() && hFile.ReadLine(sBuffer, sizeof(sBuffer)))
+				{
+					if (sBuffer[0])
+					{
+						panel_info.DrawText(sBuffer);
+					}
+				}
+		
+				panel_info.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 			}
 		}
 		
-		DrawPanelItem(panel_info, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+		delete hFile;
+	}
+
+	Shop_GetCfgFile(sBuffer, sizeof(sBuffer), "shop_sort.txt");
+	
+	hFile = OpenFile(sBuffer, "r");
+	if (hFile != null)
+	{
+		g_hSortArray = new ArrayList(ByteCountToCells(SHOP_MAX_STRING_LENGTH));
 		
-		CloseHandle(file);
+		while (!hFile.EndOfFile() && hFile.ReadLine(sBuffer, sizeof(sBuffer)))
+		{
+			TrimString(sBuffer);
+			if (sBuffer[0])
+			{
+				g_hSortArray.PushString(sBuffer);
+			}
+		}
+		
+		if(!g_hSortArray.Length)
+		{
+			delete g_hSortArray;
+			g_hSortArray = null;
+		}
+
+		delete hFile;
 	}
 }
 
-public OnMapEnd()
+public void OnMapEnd()
 {
 	Functions_OnMapEnd();
-	PlayerManager_OnMapEnd();
+//	PlayerManager_OnMapEnd();
 }
 
-ShowInfo(client)
+void ShowInfo(int client)
 {
-	if (panel_info != INVALID_HANDLE)
+	if (panel_info != null)
 	{
 		SetGlobalTransTarget(client);
 		
-		decl String:buffer[32];
-		FormatEx(buffer, sizeof(buffer), "%t", "Back");
-		SetPanelCurrentKey(panel_info, 1);
-		DrawPanelItem(panel_info, buffer, ITEMDRAW_CONTROL);
+		char sBuffer[32];
+		FormatEx(sBuffer, sizeof(sBuffer), "%t", "Back");
+		panel_info.CurrentKey = 1;
+		panel_info.DrawItem(sBuffer, ITEMDRAW_CONTROL);
 		
-		DrawPanelItem(panel_info, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+		panel_info.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 		
-		FormatEx(buffer, sizeof(buffer), "%t", "Exit");
-		SetPanelCurrentKey(panel_info, 10);
-		DrawPanelItem(panel_info, buffer, ITEMDRAW_CONTROL);
+		FormatEx(sBuffer, sizeof(sBuffer), "%t", "Exit");
+		panel_info.CurrentKey = g_iMaxPageItems;
+		panel_info.DrawItem(sBuffer, ITEMDRAW_CONTROL);
 		
-		SendPanelToClient(panel_info, client, InfoHandle, MENU_TIME_FOREVER);
+		panel_info.Send(client, InfoHandle, MENU_TIME_FOREVER);
 	}
 }
 
-public InfoHandle(Handle:menu, MenuAction:action, param1, param2)
+public int InfoHandle(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
 		case MenuAction_Select :
 		{
-			if (param2 != 10)
+			if (param2 == 1)
 			{
 				ShowMainMenu(param1);
 			}
 		}
 	}
+
+	return 0;
 }
 
-DatabaseClear()
+void DatabaseClear()
 {
 	PlayerManager_DatabaseClear();
 }
 
-bool:IsInGame(player_id)
+stock bool IsInGame(int player_id)
 {
 	return PlayerManager_IsInGame(player_id);
 }
 
-OnReadyToStart()
+void OnReadyToStart()
 {
 	if (!is_started)
 	{
 		is_started = true;
 		
 		Forward_NotifyShopLoaded();
-		PlayerManager_OnReadyToStart();
+	//	PlayerManager_OnReadyToStart();
 		
-		for (new client = 1; client <= MaxClients; client++)
+		for (int client = 1; client <= MaxClients; client++)
 		{
 			if (IsClientInGame(client))
 			{
@@ -353,7 +439,7 @@ OnReadyToStart()
 	}
 }
 
-public OnClientPutInServer(client)
+public void OnClientPutInServer(int client)
 {
 	if (!IsStarted() || IsFakeClient(client))
 	{
@@ -362,77 +448,78 @@ public OnClientPutInServer(client)
 	PlayerManager_OnClientPutInServer(client);
 }
 
-public OnClientDisconnect_Post(client)
+public void OnClientDisconnect_Post(int client)
 {
 	Functions_OnClientDisconnect_Post(client);
 	PlayerManager_OnClientDisconnect_Post(client);
 }
 
-public Action:Command_Say(client, const String:command[], argc)
+// TODO replace to OnClientSayCommand
+public Action Command_Say(int client, const char[] command, int argc)
 {
-	decl String:text[192];
-	if (!GetCmdArgString(text, sizeof(text)))
+	if(client > 0 && client <= MaxClients)
 	{
-		return Plugin_Continue;
-	}
-	StripQuotes(text);
-	TrimString(text);
-	
-	if (Functions_OnClientSayCommand(client, text) != Plugin_Continue)
-	{
-		return Plugin_Handled;
+		char text[192];
+		if (!GetCmdArgString(text, sizeof(text)) || !text[0])
+		{
+			return Plugin_Continue;
+		}
+		StripQuotes(text);
+		TrimString(text);
+		
+		if (Functions_OnClientSayCommand(client, text) != Plugin_Continue)
+		{
+			return Plugin_Handled;
+		}
 	}
 	
 	return Plugin_Continue;
 }
 
-ShowMainMenu(client, pos = 0)
+void ShowMainMenu(int client, int pos = 0)
 {
-	new Handle:menu = CreateMenu(MainMenu_Handler);
-	SetMenuExitButton(menu, true);
-	SetMenuExitBackButton(menu, false);
+	Menu menu = new Menu(MainMenu_Handler);
+	menu.ExitButton = true;
+	menu.ExitBackButton =  false;
 	
-	decl String:buffer[192];
-	FormatEx(buffer, sizeof(buffer), "%T\n%T", "MainMenuTitle", client, "credits", client, PlayerManager_GetCredits(client));
-	OnMenuTitle(client, Menu_Main, buffer, buffer, sizeof(buffer));
-	SetMenuTitle(menu, buffer);
+	char sBuffer[192];
+	FormatEx(sBuffer, sizeof(sBuffer), "%T\n%T", "MainMenuTitle", client, "credits", client, PlayerManager_GetCredits(client));
+	OnMenuTitle(client, Menu_Main, sBuffer, sBuffer, sizeof(sBuffer));
+	menu.SetTitle(sBuffer);
 	
-	FormatEx(buffer, sizeof(buffer), "%T", "buy", client);
-	AddMenuItem(menu, "0", buffer);
+	FormatEx(sBuffer, sizeof(sBuffer), "%T", "buy", client);
+	menu.AddItem("0", sBuffer);
 	
-	FormatEx(buffer, sizeof(buffer), "%T\n ", "inventory", client);
-	AddMenuItem(menu, "2", buffer);
+	FormatEx(sBuffer, sizeof(sBuffer), "%T\n ", "inventory", client);
+	menu.AddItem("2", sBuffer);
 	
-	FormatEx(buffer, sizeof(buffer), "%T\n ", "functions", client);
-	AddMenuItem(menu, "3", buffer);
+	FormatEx(sBuffer, sizeof(sBuffer), "%T\n ", "functions", client);
+	menu.AddItem("3", sBuffer);
 	
-	if (panel_info != INVALID_HANDLE)
+	if (panel_info != null)
 	{
-		FormatEx(buffer, sizeof(buffer), "%T\n ", "info", client);
-		AddMenuItem(menu, "4", buffer);
+		FormatEx(sBuffer, sizeof(sBuffer), "%T\n ", "info", client);
+		menu.AddItem("4", sBuffer);
 	}
 	
 	if (g_iAdminFlags != 0 && (GetUserFlagBits(client) & g_iAdminFlags) && GetUserAdmin(client) != INVALID_ADMIN_ID)
 	{
-		FormatEx(buffer, sizeof(buffer), "%T", "admin_panel", client);
-		AddMenuItem(menu, "5", buffer);
+		FormatEx(sBuffer, sizeof(sBuffer), "%T", "admin_panel", client);
+		menu.AddItem("5", sBuffer);
 	}
 	
-	DisplayMenuAtItem(menu, client, pos, MENU_TIME_FOREVER);
+	menu.DisplayAt(client, pos, MENU_TIME_FOREVER);
 }
 
-public MainMenu_Handler(Handle:menu, MenuAction:action, param1, param2)
+public int MainMenu_Handler(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
-		case MenuAction_End :
-		{
-			CloseHandle(menu);
-		}
+		case MenuAction_End : delete menu;
 		case MenuAction_Select :
 		{
-			decl String:info[4];
-			GetMenuItem(menu, param2, info, sizeof(info));
+			char info[4];
+			menu.GetItem(param2, info, sizeof(info));
 			
 			switch (info[0])
 			{
@@ -467,24 +554,26 @@ public MainMenu_Handler(Handle:menu, MenuAction:action, param1, param2)
 			}
 		}
 	}
+
+	return 0;
 }
 
-bool:ShowInventory(client)
+bool ShowInventory(int client)
 {
-	new Handle:menu = CreateMenu(OnInventorySelect);
-	if (!ItemManager_FillCategories(menu, client, true))
+	Menu menu = new Menu(OnInventorySelect);
+	if (!ItemManager_FillCategories(menu, client, Menu_Inventory))
 	{
-		CloseHandle(menu);
+		delete menu;
 		return false;
 	}
 	
-	decl String:title[128];
+	char title[128];
 	FormatEx(title, sizeof(title), "%T\n%T", "inventory", client, "credits", client, PlayerManager_GetCredits(client));
 	OnMenuTitle(client, Menu_Inventory, title, title, sizeof(title));
-	SetMenuTitle(menu, title);
+	menu.SetTitle(title);
 	
-	SetMenuExitButton(menu, true);
-	SetMenuExitBackButton(menu, true);
+	menu.ExitButton = true;
+	menu.ExitBackButton = true;
 	
 	iClMenuId[client] = Menu_Inventory;
 	
@@ -493,19 +582,23 @@ bool:ShowInventory(client)
 	return true;
 }
 
-public OnInventorySelect(Handle:menu, MenuAction:action, param1, param2)
+public int OnInventorySelect(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
 		case MenuAction_Select:
 		{
-			decl String:info[16];
-			GetMenuItem(menu, param2, info, sizeof(info));
-			if (!ShowItemsOfCategory(param1, StringToInt(info), true) && !ShowInventory(param1))
+			char info[16];
+			menu.GetItem(param2, info, sizeof(info));
+
+			int category_id = StringToInt(info);
+			
+			if (!ItemManager_OnCategorySelect(param1, category_id, Menu_Inventory))
 			{
-				ShowMainMenu(param1);
-				CPrintToChat(param1, "%t", "EmptyInventory");
+				return 0;
 			}
+
+			ShowItemsOfCategory(param1, StringToInt(info), Menu_Inventory);
 		}
 		case MenuAction_Cancel:
 		{
@@ -516,28 +609,30 @@ public OnInventorySelect(Handle:menu, MenuAction:action, param1, param2)
 		}
 		case MenuAction_End:
 		{
-			CloseHandle(menu);
+			delete menu;
 		}
 	}
+
+	return 0;
 }
 
-bool:ShowCategories(client)
+bool ShowCategories(int client)
 {
-	new Handle:menu = CreateMenu(OnCategorySelect);
-	
-	if (!ItemManager_FillCategories(menu, client, false))
+	Menu menu = new Menu(OnCategorySelect);
+
+	if (!ItemManager_FillCategories(menu, client, Menu_Buy))
 	{
-		CloseHandle(menu);
+		delete menu;
 		return false;
 	}
 	
-	decl String:title[128];
+	char title[128];
 	FormatEx(title, sizeof(title), "%T\n%T", "Shop", client, "credits", client, PlayerManager_GetCredits(client));
 	OnMenuTitle(client, Menu_Buy, title, title, sizeof(title));
-	SetMenuTitle(menu, title);
+	menu.SetTitle(title);
 	
-	SetMenuExitButton(menu, true);
-	SetMenuExitBackButton(menu, true);
+	menu.ExitButton = true;
+	menu.ExitBackButton = true;
 	
 	iClMenuId[client] = Menu_Buy;
 	
@@ -546,27 +641,23 @@ bool:ShowCategories(client)
 	return true;
 }
 
-public OnCategorySelect(Handle:menu, MenuAction:action, param1, param2)
+public int OnCategorySelect(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
 		case MenuAction_Select :
 		{
-			decl String:info[16];
-			GetMenuItem(menu, param2, info, sizeof(info));
+			char info[16];
+			menu.GetItem(param2, info, sizeof(info));
 			
-			new category_id = StringToInt(info);
+			int category_id = StringToInt(info);
 			
-			if (!ItemManager_OnCategorySelect(param1, category_id, (iClMenuId[param1] == Menu_Buy) ? Menu_Buy : Menu_Inventory))
+			if (!ItemManager_OnCategorySelect(param1, category_id, Menu_Buy))
 			{
-				return;
+				return 0;
 			}
 			
-			if (!ShowItemsOfCategory(param1, category_id, false) && !ShowCategories(param1))
-			{
-				ShowMainMenu(param1);
-				CPrintToChat(param1, "%t", "EmptyShop");
-			}
+			ShowItemsOfCategory(param1, category_id, Menu_Buy);
 		}
 		case MenuAction_Cancel :
 		{
@@ -575,61 +666,51 @@ public OnCategorySelect(Handle:menu, MenuAction:action, param1, param2)
 				ShowMainMenu(param1);
 			}
 		}
-		case MenuAction_End :
-		{
-			CloseHandle(menu);
-		}
+		case MenuAction_End : delete menu;
 	}
+
+	return 0;
 }
 
-bool:ShowItemsOfCategory(client, category_id, bool:inventory, pos = 0)
+bool ShowItemsOfCategory(int client, int category_id, ShopMenu shop_menu, int pos = 0)
 {
-	new Handle:menu = CreateMenu(OnItemSelect, MENU_ACTIONS_DEFAULT|MenuAction_DrawItem|MenuAction_DisplayItem);
-	if (!ItemManager_FillItemsOfCategory(menu, client, client, category_id, inventory))
-	{
-		CloseHandle(menu);
-		return false;
-	}
-	decl String:title[128];
-	if (inventory)
-	{
-		FormatEx(title, sizeof(title), "%T\n%T", "inventory", client, "credits", client, PlayerManager_GetCredits(client));
-		OnMenuTitle(client, Menu_Inventory, title, title, sizeof(title));
-		iClMenuId[client] = Menu_Inventory;
-	}
-	else
-	{
-		FormatEx(title, sizeof(title), "%T\n%T", "Shop", client, "credits", client, PlayerManager_GetCredits(client));
-		OnMenuTitle(client, Menu_Buy, title, title, sizeof(title));
-		iClMenuId[client] = Menu_Buy;
-	}
+	Menu menu = new Menu(OnItemSelect, MENU_ACTIONS_DEFAULT|MenuAction_DisplayItem);
+	bool result = ItemManager_FillItemsOfCategory(menu, client, client, category_id, shop_menu);
+
+	char title[128];
+	FormatEx(title, sizeof(title), "%T\n%T", (shop_menu == Menu_Inventory) ? "inventory" : "Shop", client, "credits", client, PlayerManager_GetCredits(client));
+	OnMenuTitle(client, shop_menu, title, title, sizeof(title));
+	menu.SetTitle(title);
 	
-	SetMenuTitle(menu, title);
-	
-	bInv[client] = inventory;
-	
-	SetMenuExitButton(menu, true);
-	SetMenuExitBackButton(menu, true);
-	
+	bInv[client] = (shop_menu == Menu_Inventory);
 	iClCategoryId[client] = category_id;
+	iClMenuId[client] = shop_menu;
 	
-	DisplayMenuAtItem(menu, client, pos, MENU_TIME_FOREVER);
+	menu.ExitBackButton = true;
+	menu.ExitButton = true;
 	
-	return true;
+	menu.DisplayAt(client, pos, MENU_TIME_FOREVER);
+	return result;
 }
 
-public OnItemSelect(Handle:menu, MenuAction:action, param1, param2)
+public int OnItemSelect(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
 		case MenuAction_Select :
 		{
-			decl String:info[16];
-			GetMenuItem(menu, param2, info, sizeof(info));
+			char info[16];
+			menu.GetItem(param2, info, sizeof(info));
 			iPos[param1] = GetMenuSelectionPosition();
-			if (!ShowItemInfo(param1, StringToInt(info)))
+
+			int value = StringToInt(info);
+			Action result = Forward_OnItemSelect(param1, iClMenuId[param1], iClCategoryId[param1], value);
+			
+			if (result == Plugin_Handled || 
+			((result == Plugin_Changed || result == Plugin_Continue) && !ShowItemInfo(param1, value)))
 			{
-				ShowItemsOfCategory(param1, iClCategoryId[param1], bInv[param1], iPos[param1]);
+				Forward_OnItemSelected(param1, iClMenuId[param1], iClCategoryId[param1], value);
+				ShowItemsOfCategory(param1, iClCategoryId[param1], iClMenuId[param1], iPos[param1]);
 			}
 		}
 		case MenuAction_Cancel :
@@ -651,40 +732,18 @@ public OnItemSelect(Handle:menu, MenuAction:action, param1, param2)
 				}
 			}
 		}
-		case MenuAction_End :
-		{
-			CloseHandle(menu);
-		}
-		case MenuAction_DrawItem :
-		{
-			decl String:info[16];
-			GetMenuItem(menu, param2, info, sizeof(info));
-			
-			new bool:disabled;
-			
-			switch (Forward_OnItemDraw(param1, bInv[param1] ? Menu_Inventory : Menu_Buy, iClCategoryId[param1], StringToInt(info), disabled))
-			{
-				case Plugin_Continue:
-				{
-					disabled = false;
-				}
-				case Plugin_Handled, Plugin_Stop:
-				{
-					RemoveMenuItem(menu, param2);
-					return 0;
-				}
-			}
-			if (disabled)
-			{
-				return ITEMDRAW_DISABLED;
-			}
-		}
+		case MenuAction_End : delete menu;
 		case MenuAction_DisplayItem:
 		{
-			decl String:info[16], String:buffer[SHOP_MAX_STRING_LENGTH];
-			GetMenuItem(menu, param2, info, sizeof(info), _, buffer, sizeof(buffer));
+			char info[16], sBuffer[SHOP_MAX_STRING_LENGTH];
+			menu.GetItem(param2, info, sizeof(info), _, sBuffer, sizeof(sBuffer));
+
+			if(!info[0])
+			{
+				return 0;
+			} 
 			
-			new bool:result = Forward_OnItemDisplay(param1, bInv[param1] ? Menu_Inventory : Menu_Buy, iClCategoryId[param1], StringToInt(info), buffer, buffer, sizeof(buffer));
+			bool result = Forward_OnItemDisplay(param1, bInv[param1] ? Menu_Inventory : Menu_Buy, iClCategoryId[param1], StringToInt(info), sBuffer, sBuffer, sizeof(sBuffer));
 			
 			switch (ItemManager_GetItemTypeEx(info))
 			{
@@ -692,11 +751,11 @@ public OnItemSelect(Handle:menu, MenuAction:action, param1, param2)
 				{
 					if (bInv[param1])
 					{
-						Format(buffer, sizeof(buffer), "%s (%d)", buffer, PlayerManager_GetItemCountEx(param1, info));
+						Format(sBuffer, sizeof(sBuffer), "%s (%d)", sBuffer, PlayerManager_GetItemCountEx(param1, info));
 					}
 					else
 					{
-						Format(buffer, sizeof(buffer), "[%d] %s (%d)", ItemManager_GetItemPriceEx(info), buffer, PlayerManager_GetItemCountEx(param1, info));
+						Format(sBuffer, sizeof(sBuffer), "[%d] %s (%d)", ItemManager_GetItemPriceEx(info), sBuffer, PlayerManager_GetItemCountEx(param1, info));
 					}
 					result = true;
 				}
@@ -704,7 +763,7 @@ public OnItemSelect(Handle:menu, MenuAction:action, param1, param2)
 				{
 					if (!bInv[param1])
 					{
-						Format(buffer, sizeof(buffer), "[%d] %s", ItemManager_GetItemPriceEx(info), buffer);
+						Format(sBuffer, sizeof(sBuffer), "[%d] %s", ItemManager_GetItemPriceEx(info), sBuffer);
 						result = true;
 					}
 				}
@@ -714,30 +773,30 @@ public OnItemSelect(Handle:menu, MenuAction:action, param1, param2)
 					{
 						if (PlayerManager_ClientHasItemEx(param1, info))
 						{
-							new timeleft = PlayerManager_GetItemTimeleftEx(param1, info);
+							int timeleft = PlayerManager_GetItemTimeleftEx(param1, info);
 							if (timeleft > 0)
 							{
 								GetTimeFromStamp(info, sizeof(info), timeleft, param1);
-								Format(buffer, sizeof(buffer), "[+] %s (%s)", buffer, info);
+								Format(sBuffer, sizeof(sBuffer), "[+] %s (%s)", sBuffer, info);
 							}
 							else
 							{
-								Format(buffer, sizeof(buffer), "[+] %s (%T)", buffer, "forever", param1);
+								Format(sBuffer, sizeof(sBuffer), "[+] %s (%T)", sBuffer, "forever", param1);
 							}
 						}
 						else
 						{
-							Format(buffer, sizeof(buffer), "[%d] %s", ItemManager_GetItemPriceEx(info), buffer);
+							Format(sBuffer, sizeof(sBuffer), "[%d] %s", ItemManager_GetItemPriceEx(info), sBuffer);
 						}
 						result = true;
 					}
 					else
 					{
-						new timeleft = PlayerManager_GetItemTimeleftEx(param1, info);
+						int timeleft = PlayerManager_GetItemTimeleftEx(param1, info);
 						if (timeleft > 0)
 						{
 							GetTimeFromStamp(info, sizeof(info), timeleft, param1);
-							Format(buffer, sizeof(buffer), "%s (%s)", buffer, info);
+							Format(sBuffer, sizeof(sBuffer), "%s (%s)", sBuffer, info);
 							result = true;
 						}
 					}
@@ -745,7 +804,7 @@ public OnItemSelect(Handle:menu, MenuAction:action, param1, param2)
 			}
 			if (result)
 			{
-				return RedrawMenuItem(buffer);
+				return RedrawMenuItem(sBuffer);
 			}
 		}
 	}
@@ -761,25 +820,31 @@ public OnItemSelect(Handle:menu, MenuAction:action, param1, param2)
 #define BUTTON_BACK 8
 #define BUTTON_EXIT 10
 
-new iButton[MAXPLAYERS+1][11];
+int iButton[MAXPLAYERS+1][11];
 
-bool:ShowItemInfo(client, item_id)
+#define CONFIRM_YES 1
+#define CONFIRM_NO 2
+
+bool ShowItemInfo(int client, int item_id)
 {
-	new Handle:panel = ItemManager_CreateItemPanelInfo(client, item_id, bInv[client] ? Menu_Inventory : Menu_Buy);
-	if (panel != INVALID_HANDLE)
+	Panel panel = ItemManager_CreateItemPanelInfo(client, item_id, bInv[client] ? Menu_Inventory : Menu_Buy);
+	if (panel != null)
 	{
-		decl String:buffer[SHOP_MAX_STRING_LENGTH], String:sItemId[16];
+		char sBuffer[SHOP_MAX_STRING_LENGTH], sItemId[16];
 		IntToString(item_id, sItemId, sizeof(sItemId));
+		
+		bool isHidden = ItemManager_GetItemHideEx(sItemId);
+		
 		SetGlobalTransTarget(client);
 		
-		new credits = GetCredits(client);
+		int credits = GetCredits(client);
 		
-		FormatEx(buffer, sizeof(buffer), "%t\n ", "credits", credits);
-		SetPanelTitle(panel, buffer, false);
+		FormatEx(sBuffer, sizeof(sBuffer), "%t\n ", "credits", credits);
+		panel.SetTitle(sBuffer, false);
 		
-		new ItemType:type = ItemManager_GetItemTypeEx(sItemId);
+		ItemType type = ItemManager_GetItemTypeEx(sItemId);
 		
-		new button = 1;
+		int button = 1;
 		
 		switch (type)
 		{
@@ -787,112 +852,120 @@ bool:ShowItemInfo(client, item_id)
 			{
 				if (PlayerManager_ClientHasItemEx(client, sItemId))
 				{
-					new timeleft = PlayerManager_GetItemTimeleftEx(client, sItemId);
-					new sell_price = PlayerManager_GetItemSellPriceEx(client, sItemId);
+					int timeleft = PlayerManager_GetItemTimeleftEx(client, sItemId);
+					int sell_price = PlayerManager_GetItemSellPriceEx(client, sItemId);
 					if (timeleft > 0)
 					{
-						GetTimeFromStamp(buffer, sizeof(buffer), timeleft, client);
-						Format(buffer, sizeof(buffer), "%t: %s", "timeleft", buffer);
-						DrawPanelText(panel, buffer);
+						GetTimeFromStamp(sBuffer, sizeof(sBuffer), timeleft, client);
+						Format(sBuffer, sizeof(sBuffer), "%t: %s", "timeleft", sBuffer);
+						panel.DrawText(sBuffer);
 						
 						if (sell_price > -1)
 						{
-							FormatEx(buffer, sizeof(buffer), "%t: %d", "absolute_sellprice", sell_price);
-							DrawPanelText(panel, buffer);
+							FormatEx(sBuffer, sizeof(sBuffer), "%t: %d", "absolute_sellprice", sell_price);
+							panel.DrawText(sBuffer);
 						}
-						DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+						panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 					}
 					if (sell_price > -1)
 					{
-						FormatEx(buffer, sizeof(buffer), "%t [+%d]", "sell", sell_price);
-						DrawPanelItem(panel, buffer);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t [+%d]", "sell", sell_price);
+						panel.DrawItem(sBuffer);
 						iButton[client][button++] = BUTTON_SELL;
 					}
-					switch (g_iItemTransfer)
+					if (!isHidden)
 					{
-						case -1 :
+						switch (g_iItemTransfer)
 						{
-						}
-						case 0 :
-						{
-							FormatEx(buffer, sizeof(buffer), "%t", "transfer");
-							DrawPanelItem(panel, buffer);
-							iButton[client][button++] = BUTTON_TRANSFER;
-						}
-						default :
-						{
-							FormatEx(buffer, sizeof(buffer), "%t [%t: %d]", "transfer", "Price", g_iItemTransfer);
-							DrawPanelItem(panel, buffer, (credits < g_iItemTransfer) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
-							iButton[client][button++] = BUTTON_TRANSFER;
+							case -1 :
+							{
+							}
+							case 0 :
+							{
+								FormatEx(sBuffer, sizeof(sBuffer), "%t", "transfer");
+								panel.DrawItem(sBuffer);
+								iButton[client][button++] = BUTTON_TRANSFER;
+							}
+							default :
+							{
+								FormatEx(sBuffer, sizeof(sBuffer), "%t [%t: %d]", "transfer", "Price", g_iItemTransfer);
+								panel.DrawItem(sBuffer, (credits < g_iItemTransfer) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+								iButton[client][button++] = BUTTON_TRANSFER;
+							}
 						}
 					}
 				}
-				else
+				else if (!isHidden)
 				{
 					if (GetCredits(client) < ItemManager_GetItemPriceEx(sItemId))
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "buy_not");
-						DrawPanelItem(panel, buffer, ITEMDRAW_DISABLED);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy_not");
+						panel.DrawItem(sBuffer, ITEMDRAW_DISABLED);
 					}
 					else
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "buy");
-						DrawPanelItem(panel, buffer);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy");
+						panel.DrawItem(sBuffer);
 					}
 					iButton[client][button++] = BUTTON_BUY;
 				}
 			}
 			case Item_Finite :
 			{
-				new count = PlayerManager_GetItemCountEx(client, sItemId);
-				FormatEx(buffer, sizeof(buffer), "%t: %d", "You have", count);
-				DrawPanelText(panel, buffer);
+				int count = PlayerManager_GetItemCountEx(client, sItemId);
+				FormatEx(sBuffer, sizeof(sBuffer), "%t: %d", "You have", count);
+				panel.DrawText(sBuffer);
 				
-				DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+				panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 				
-				if (GetCredits(client) < ItemManager_GetItemPriceEx(sItemId))
+				if (!isHidden)
 				{
-					FormatEx(buffer, sizeof(buffer), "%t", "buy_not");
-					DrawPanelItem(panel, buffer, ITEMDRAW_DISABLED);
+					if (GetCredits(client) < ItemManager_GetItemPriceEx(sItemId))
+					{
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy_not");
+						panel.DrawItem(sBuffer, ITEMDRAW_DISABLED);
+					}
+					else
+					{
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy");
+						panel.DrawItem(sBuffer);
+					}
+					
+					iButton[client][button++] = BUTTON_BUY;
 				}
-				else
-				{
-					FormatEx(buffer, sizeof(buffer), "%t", "buy");
-					DrawPanelItem(panel, buffer);
-				}
-				
-				iButton[client][button++] = BUTTON_BUY;
-				
 				if (count > 0)
 				{
-					FormatEx(buffer, sizeof(buffer), "%t", "use");
-					DrawPanelItem(panel, buffer);
+					FormatEx(sBuffer, sizeof(sBuffer), "%t", "use");
+					panel.DrawItem(sBuffer);
 					iButton[client][button++] = BUTTON_USE;
 					
-					new sell_price = PlayerManager_GetItemSellPriceEx(client, sItemId);
+					int sell_price = PlayerManager_GetItemSellPriceEx(client, sItemId);
 					
 					if (sell_price > -1)
 					{
-						FormatEx(buffer, sizeof(buffer), "%t [+%d]", "sell", sell_price);
-						DrawPanelItem(panel, buffer);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t [+%d]", "sell", sell_price);
+						panel.DrawItem(sBuffer);
 						iButton[client][button++] = BUTTON_SELL;
 					}
-					switch (g_iItemTransfer)
+					if (!isHidden)
 					{
-						case -1 :
+						switch (g_iItemTransfer)
 						{
-						}
-						case 0 :
-						{
-							FormatEx(buffer, sizeof(buffer), "%t", "transfer");
-							DrawPanelItem(panel, buffer);
-							iButton[client][button++] = BUTTON_TRANSFER;
-						}
-						default :
-						{
-							FormatEx(buffer, sizeof(buffer), "%t [%t: %d]", "transfer", "Price", g_iItemTransfer);
-							DrawPanelItem(panel, buffer, (credits < g_iItemTransfer) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
-							iButton[client][button++] = BUTTON_TRANSFER;
+							case -1 :
+							{
+							}
+							case 0 :
+							{
+								FormatEx(sBuffer, sizeof(sBuffer), "%t", "transfer");
+								panel.DrawItem(sBuffer);
+								iButton[client][button++] = BUTTON_TRANSFER;
+							}
+							default :
+							{
+								FormatEx(sBuffer, sizeof(sBuffer), "%t [%t: %d]", "transfer", "Price", g_iItemTransfer);
+								panel.DrawItem(sBuffer, (credits < g_iItemTransfer) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+								iButton[client][button++] = BUTTON_TRANSFER;
+							}
 						}
 					}
 				}
@@ -901,156 +974,170 @@ bool:ShowItemInfo(client, item_id)
 			{
 				if (PlayerManager_ClientHasItemEx(client, sItemId))
 				{
-					new timeleft = PlayerManager_GetItemTimeleftEx(client, sItemId);
-					new sell_price = PlayerManager_GetItemSellPriceEx(client, sItemId);
+					int timeleft = PlayerManager_GetItemTimeleftEx(client, sItemId);
+					int sell_price = PlayerManager_GetItemSellPriceEx(client, sItemId);
 					if (timeleft > 0)
 					{
-						GetTimeFromStamp(buffer, sizeof(buffer), timeleft, client);
-						Format(buffer, sizeof(buffer), "%t: %s", "timeleft", buffer);
-						DrawPanelText(panel, buffer);
+						GetTimeFromStamp(sBuffer, sizeof(sBuffer), timeleft, client);
+						Format(sBuffer, sizeof(sBuffer), "%t: %s", "timeleft", sBuffer);
+						panel.DrawText(sBuffer);
 						
 						if (sell_price > -1)
 						{
-							FormatEx(buffer, sizeof(buffer), "%t: %d", "absolute_sellprice", sell_price);
-							DrawPanelText(panel, buffer);
+							FormatEx(sBuffer, sizeof(sBuffer), "%t: %d", "absolute_sellprice", sell_price);
+							panel.DrawText(sBuffer);
 						}
-						DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+						panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 					}
 					if (PlayerManager_IsItemToggledEx(client, sItemId))
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "ToggleOff");
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "ToggleOff");
 					}
 					else
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "ToggleOn");
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "ToggleOn");
 					}
-					DrawPanelItem(panel, buffer);
+					panel.DrawItem(sBuffer);
 					iButton[client][button++] = BUTTON_TOGGLE;
 					
 					if (sell_price > -1)
 					{
-						FormatEx(buffer, sizeof(buffer), "%t [+%d]", "sell", sell_price);
-						DrawPanelItem(panel, buffer);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t [+%d]", "sell", sell_price);
+						panel.DrawItem(sBuffer);
 						iButton[client][button++] = BUTTON_SELL;
 					}
-					switch (g_iItemTransfer)
+					
+					if (!isHidden)
 					{
-						case -1 :
+						switch (g_iItemTransfer)
 						{
-						}
-						case 0 :
-						{
-							FormatEx(buffer, sizeof(buffer), "%t", "transfer");
-							DrawPanelItem(panel, buffer);
-							iButton[client][button++] = BUTTON_TRANSFER;
-						}
-						default :
-						{
-							FormatEx(buffer, sizeof(buffer), "%t [%t: %d]", "transfer", "Price", g_iItemTransfer);
-							DrawPanelItem(panel, buffer, (credits < g_iItemTransfer) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
-							iButton[client][button++] = BUTTON_TRANSFER;
+							case -1 :
+							{
+							}
+							case 0 :
+							{
+								FormatEx(sBuffer, sizeof(sBuffer), "%t", "transfer");
+								panel.DrawItem(sBuffer);
+								iButton[client][button++] = BUTTON_TRANSFER;
+							}
+							default :
+							{
+								FormatEx(sBuffer, sizeof(sBuffer), "%t [%t: %d]", "transfer", "Price", g_iItemTransfer);
+								panel.DrawItem(sBuffer, (credits < g_iItemTransfer) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+								iButton[client][button++] = BUTTON_TRANSFER;
+							}
 						}
 					}
 				}
-				else
+				else if (!isHidden)
 				{
 					if (GetCredits(client) < ItemManager_GetItemPriceEx(sItemId))
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "buy_not");
-						DrawPanelItem(panel, buffer, ITEMDRAW_DISABLED);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy_not");
+						panel.DrawItem(sBuffer, ITEMDRAW_DISABLED);
 					}
 					else
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "buy");
-						DrawPanelItem(panel, buffer);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy");
+						panel.DrawItem(sBuffer);
 					}
 					iButton[client][button++] = BUTTON_BUY;
 					
 					if (ItemManager_CanPreview(item_id))
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "preview");
-						DrawPanelItem(panel, buffer);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "preview");
+						panel.DrawItem(sBuffer);
 					}
 					else
 					{
-						FormatEx(buffer, sizeof(buffer), "%t", "preview_unavailable");
-						DrawPanelItem(panel, buffer, ITEMDRAW_DISABLED);
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "preview_unavailable");
+						panel.DrawItem(sBuffer, ITEMDRAW_DISABLED);
 					}
 					iButton[client][button++] = BUTTON_PREVIEW;
 				}
 			}
 			case Item_BuyOnly :
 			{
-				if (GetCredits(client) < ItemManager_GetItemPriceEx(sItemId))
+				if (!isHidden)
 				{
-					FormatEx(buffer, sizeof(buffer), "%t", "buy_not");
-					DrawPanelItem(panel, buffer, ITEMDRAW_DISABLED);
+					if (GetCredits(client) < ItemManager_GetItemPriceEx(sItemId))
+					{
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy_not");
+						panel.DrawItem(sBuffer, ITEMDRAW_DISABLED);
+					}
+					else
+					{
+						FormatEx(sBuffer, sizeof(sBuffer), "%t", "buy");
+						panel.DrawItem(sBuffer);
+					}
+					iButton[client][button++] = BUTTON_BUY;
 				}
-				else
-				{
-					FormatEx(buffer, sizeof(buffer), "%t", "buy");
-					DrawPanelItem(panel, buffer);
-				}
-				iButton[client][button++] = BUTTON_BUY;
 			}
 		}
 		
-		DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+		panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 		
-		SetPanelCurrentKey(panel, 8);
-		iButton[client][8] = BUTTON_BACK;
-		FormatEx(buffer, sizeof(buffer), "%t", "Back");
-		DrawPanelItem(panel, buffer, ITEMDRAW_CONTROL);
+		panel.CurrentKey = g_iMaxPageItems-2;
+		iButton[client][g_iMaxPageItems-2] = BUTTON_BACK;
+		FormatEx(sBuffer, sizeof(sBuffer), "%t", "Back");
+		panel.DrawItem(sBuffer, ITEMDRAW_CONTROL);
 		
-		DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+		panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 		
-		SetPanelCurrentKey(panel, 10);
-		iButton[client][10] = BUTTON_EXIT;
-		FormatEx(buffer, sizeof(buffer), "%t", "Exit");
-		DrawPanelItem(panel, buffer, ITEMDRAW_CONTROL);
+		panel.CurrentKey = g_iMaxPageItems;
+		iButton[client][g_iMaxPageItems] = BUTTON_EXIT;
+		FormatEx(sBuffer, sizeof(sBuffer), "%t", "Exit");
+		panel.DrawItem(sBuffer, ITEMDRAW_CONTROL);
 		
 		iClItemId[client] = item_id;
 		
-		SendPanelToClient(panel, client, ItemPanel_Handler, MENU_TIME_FOREVER);
-		CloseHandle(panel);
+		panel.Send(client, ItemPanel_Handler, MENU_TIME_FOREVER);
+		delete panel;
 		
 		return true;
 	}
 	return false;
 }
 
-public ItemPanel_Handler(Handle:menu, MenuAction:action, param1, param2)
+public int ItemPanel_Handler(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
 		case MenuAction_Select :
 		{
-			new bool:has = ClientHasItem(param1, iClItemId[param1]);
+			bool has = ClientHasItem(param1, iClItemId[param1]);
 			
 			switch (iButton[param1][param2])
 			{
 				case BUTTON_BUY :
 				{
-					BuyItem(param1, iClItemId[param1], false);
-					ShowItemInfo(param1, iClItemId[param1]);
+					if (g_bConfirmBuy)
+					{
+						ConfirmBuy(param1, iClItemId[param1]);
+					}
+					else
+					{
+						BuyItem(param1, iClItemId[param1], false);
+						ShowItemInfo(param1, iClItemId[param1]);
+					}
 				}
 				case BUTTON_SELL :
 				{
 					if (has)
 					{
-						SellItem(param1, iClItemId[param1]);
+						if (g_bConfirmSell)
+						{
+							ConfirmSell(param1, iClItemId[param1]);
+						}
+						else
+						{
+							SellItem(param1, iClItemId[param1]);
+							ShowItemInfo(param1, iClItemId[param1]);
+						}
 					}
 					if (bInv[param1] && PlayerManager_GetItemCount(param1, iClItemId[param1]) < 1)
 					{
-						if (!ShowItemsOfCategory(param1, iClCategoryId[param1], true, iPos[param1]) && !ShowInventory(param1))
-						{
-							ShowMainMenu(param1);
-							CPrintToChat(param1, "%t", "EmptyInventory");
-						}
-					}
-					else
-					{
-						ShowItemInfo(param1, iClItemId[param1]);
+						ShowItemsOfCategory(param1, iClCategoryId[param1], iClMenuId[param1], iPos[param1]);
 					}
 				}
 				case BUTTON_PREVIEW :
@@ -1092,87 +1179,216 @@ public ItemPanel_Handler(Handle:menu, MenuAction:action, param1, param2)
 						ShowItemInfo(param1, iClItemId[param1]);
 					}
 				}
-				case BUTTON_BACK :
+				default:
 				{
-					switch (iClMenuId[param1])
+					if(param2 == g_iMaxPageItems-2)
 					{
-						case Menu_Buy :
-						{
-							if (!ShowItemsOfCategory(param1, iClCategoryId[param1], false, iPos[param1]) && !ShowCategories(param1))
-							{
-								ShowMainMenu(param1);
-								CPrintToChat(param1, "%t", "EmptyShop");
-							}
-						}
-						case Menu_Inventory :
-						{
-							if (!ShowItemsOfCategory(param1, iClCategoryId[param1], true, iPos[param1]) && !ShowInventory(param1))
-							{
-								ShowMainMenu(param1);
-								CPrintToChat(param1, "%t", "EmptyInventory");
-							}
-						}
+						ShowItemsOfCategory(param1, iClCategoryId[param1], iClMenuId[param1], iPos[param1]);
 					}
 				}
 			}
 		}
 	}
+
+	return 0;
 }
 
-bool:SetupItemTransfer(client, pos = 0)
+void ConfirmBuy(int client, int item_id)
 {
-	new Handle:menu = CreateMenu(Menu_TransItemHandler);
+	Panel panel = ItemManager_ConfirmItemPanelInfo(client, item_id, Menu_Buy, true);
+
+	if (panel == null)
+		return;
+
+	char sBuffer[256], sItemId[16];
+	IntToString(item_id, sItemId, sizeof(sItemId));
 	
-	if (!FillMenuByItemTransTarget(menu, client, iClItemId[client]))
+	SetGlobalTransTarget(client);
+	
+	int credits = GetCredits(client);
+	
+	FormatEx(sBuffer, sizeof(sBuffer), "%t\n ", "credits", credits);
+	panel.SetTitle(sBuffer, false);
+	
+	ItemType type = ItemManager_GetItemTypeEx(sItemId);
+
+	panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+
+	if(type == Item_Finite)
 	{
-		CloseHandle(menu);
-		return false;
+		int count = PlayerManager_GetItemCountEx(client, sItemId);
+		FormatEx(sBuffer, sizeof(sBuffer), "%t: %d", "You have", count);
+		panel.DrawText(sBuffer);
+		
+		panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 	}
+		
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "You Buy Sure");
+	panel.DrawText(sBuffer);
+
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "Yes");
+	panel.DrawItem(sBuffer);
+
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "No");
+	panel.DrawItem(sBuffer);
+
+	iClItemId[client] = item_id;
 	
-	decl String:title[128];
-	FormatEx(title, sizeof(title), "%T", "ItemTransferMenu", client);
-	OnMenuTitle(client, Menu_ItemTransfer, title, title, sizeof(title));
-	SetMenuTitle(menu, title);
-	
-	SetMenuExitButton(menu, true);
-	SetMenuExitBackButton(menu, true);
-	
-	DisplayMenuAtItem(menu, client, pos, MENU_TIME_FOREVER);
-	
-	return true;
+	panel.Send(client, BuyConfirmPanel_Handler, MENU_TIME_FOREVER);
+	delete panel;
 }
 
-new g_iItemTransTarget[MAXPLAYERS+1];
-public Menu_TransItemHandler(Handle:menu, MenuAction:action, param1, param2)
+public int BuyConfirmPanel_Handler(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
 		case MenuAction_Select :
 		{
-			decl String:info[16];
-			GetMenuItem(menu, param2, info, sizeof(info));
+			switch (param2)
+			{
+				case CONFIRM_YES :
+				{
+					BuyItem(param1, iClItemId[param1], false);
+					ShowItemInfo(param1, iClItemId[param1]);
+				}
+				case CONFIRM_NO :
+				{
+					ShowItemInfo(param1, iClItemId[param1]);
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
+void ConfirmSell(int client, int item_id)
+{
+	Panel panel = ItemManager_ConfirmItemPanelInfo(client, item_id, Menu_Buy, false);
+	
+	if (panel == null)
+		return;
+
+	char sBuffer[256], sItemId[16];
+	IntToString(item_id, sItemId, sizeof(sItemId));
+	
+	SetGlobalTransTarget(client);
+	
+	int credits = GetCredits(client);
+	
+	FormatEx(sBuffer, sizeof(sBuffer), "%t\n ", "credits", credits);
+	panel.SetTitle(sBuffer, false);
+	
+	ItemType type = ItemManager_GetItemTypeEx(sItemId);
+
+	panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+	
+	if(type == Item_Finite)
+	{
+		int count = PlayerManager_GetItemCountEx(client, sItemId);
+		FormatEx(sBuffer, sizeof(sBuffer), "%t: %d", "You have", count);
+		panel.DrawText(sBuffer);
+		
+		panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+	}
+
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "You Sell Sure");
+	panel.DrawText(sBuffer);
+
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "Yes");
+	panel.DrawItem(sBuffer);
+
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "No");
+	panel.DrawItem(sBuffer);
+	
+	iClItemId[client] = item_id;
+	
+	panel.Send(client, SellConfirmPanel_Handler, MENU_TIME_FOREVER);
+	delete panel;
+}
+
+public int SellConfirmPanel_Handler(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch (action)
+	{
+		case MenuAction_Select :
+		{
+			switch (param2)
+			{
+				case CONFIRM_YES :
+				{
+					SellItem(param1, iClItemId[param1]);
+					ShowItemInfo(param1, iClItemId[param1]);
+				}
+				case CONFIRM_NO :
+				{
+					ShowItemInfo(param1, iClItemId[param1]);
+				}
+			}
+		}
+		case MenuAction_End :
+		{
+			delete menu;
+		}
+	}
+
+	return 0;
+}
+
+bool SetupItemTransfer(int client, int pos = 0)
+{
+	Menu menu = new Menu(Menu_TransItemHandler);
+	
+	if (!FillMenuByItemTransTarget(menu, client, iClItemId[client]))
+	{
+		delete menu;
+		return false;
+	}
+	
+	char title[128];
+	FormatEx(title, sizeof(title), "%T", "ItemTransferMenu", client);
+	OnMenuTitle(client, Menu_ItemTransfer, title, title, sizeof(title));
+	menu.SetTitle(title);
+	
+	menu.ExitButton = true;
+	menu.ExitBackButton = true;
+	
+	menu.DisplayAt(client, pos, MENU_TIME_FOREVER);
+	
+	return true;
+}
+
+int g_iItemTransTarget[MAXPLAYERS+1];
+public int Menu_TransItemHandler(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch (action)
+	{
+		case MenuAction_Select :
+		{
+			char info[16];
+			menu.GetItem(param2, info, sizeof(info));
 			
-			new userid = StringToInt(info);
-			new target = GetClientOfUserId(userid);
+			int userid = StringToInt(info);
+			int target = GetClientOfUserId(userid);
 			
 			if (!target)
 			{
 				SetupItemTransfer(param1);
 				CPrintToChat(param1, "%t", "target_left_game");
-				return;
+				return 0;
 			}
-			new ItemType:type = GetItemType(iClItemId[param1]);
+			ItemType type = GetItemType(iClItemId[param1]);
 			if (type != Item_Finite && ClientHasItem(target, iClItemId[param1]))
 			{
 				SetupItemTransfer(param1, GetMenuSelectionPosition());
 				CPrintToChat(param1, "%t", "already_has", target);
-				return;
+				return 0;
 			}
 			if (!ClientHasItem(param1, iClItemId[param1]))
 			{
 				ShowItemInfo(param1, iClItemId[param1]);
 				CPrintToChat(param1, "%t", "no_item");
-				return;
+				return 0;
 			}
 			
 			g_iItemTransTarget[param1] = userid;
@@ -1185,16 +1401,15 @@ public Menu_TransItemHandler(Handle:menu, MenuAction:action, param1, param2)
 				ShowItemInfo(param1, iClItemId[param1]);
 			}
 		}
-		case MenuAction_End :
-		{
-			CloseHandle(menu);
-		}
+		case MenuAction_End : delete menu;
 	}
+
+	return 0;
 }
 
-ShowTransItemInfo(client)
+void ShowTransItemInfo(int client)
 {
-	new target = GetClientOfUserId(g_iItemTransTarget[client]);
+	int target = GetClientOfUserId(g_iItemTransTarget[client]);
 	if (!target)
 	{
 		ShowItemInfo(client, iClItemId[client]);
@@ -1210,52 +1425,53 @@ ShowTransItemInfo(client)
 	
 	SetGlobalTransTarget(client);
 	
-	new Handle:panel = CreatePanel();
+	Panel panel = new Panel();
 	
-	decl String:buffer[128];
-	FormatEx(buffer, sizeof(buffer), "%t", "ItemTransferMenu2", target);
-	SetPanelTitle(panel, buffer);
+	char sBuffer[128];
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "ItemTransferMenu2", target);
+	panel.SetTitle(sBuffer);
 	
-	DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+	panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 	
-	decl String:category[SHOP_MAX_STRING_LENGTH], String:item[SHOP_MAX_STRING_LENGTH];
+	char category[SHOP_MAX_STRING_LENGTH], item[SHOP_MAX_STRING_LENGTH];
 	GetCategoryDisplay(GetItemCategoryId(iClItemId[client]), client, category, sizeof(category));
 	ItemManager_GetItemDisplay(iClItemId[client], client, item, sizeof(item));
-	FormatEx(buffer, sizeof(buffer), "%s - %s", category, item);
-	DrawPanelText(panel, buffer);
+	FormatEx(sBuffer, sizeof(sBuffer), "%s - %s", category, item);
+	panel.DrawText(sBuffer);
 	
-	DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+	panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 	
 	if (GetItemType(iClItemId[client]) == Item_Finite)
 	{
-		FormatEx(buffer, sizeof(buffer), "%N: %d", target, PlayerManager_GetItemCount(target, iClItemId[client]));
-		DrawPanelText(panel, buffer);
+		FormatEx(sBuffer, sizeof(sBuffer), "%N: %d", target, PlayerManager_GetItemCount(target, iClItemId[client]));
+		panel.DrawText(sBuffer);
 		
-		FormatEx(buffer, sizeof(buffer), "%t: %d", "You have", PlayerManager_GetItemCount(client, iClItemId[client]));
-		DrawPanelText(panel, buffer);
+		FormatEx(sBuffer, sizeof(sBuffer), "%t: %d", "You have", PlayerManager_GetItemCount(client, iClItemId[client]));
+		panel.DrawText(sBuffer);
 		
-		DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+		panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 	}
 	
-	FormatEx(buffer, sizeof(buffer), "%t", "transfer");
-	DrawPanelItem(panel, buffer);
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "transfer");
+	panel.DrawItem(sBuffer);
 	
-	DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+	panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 	
-	SetPanelCurrentKey(panel, 8);
-	FormatEx(buffer, sizeof(buffer), "%t", "Back");
-	DrawPanelItem(panel, buffer);
+	panel.CurrentKey = g_iMaxPageItems-2;
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "Back");
+	panel.DrawItem(sBuffer);
 	
-	DrawPanelItem(panel, " ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
+	panel.DrawItem(" ", ITEMDRAW_SPACER|ITEMDRAW_RAWLINE);
 	
-	SetPanelCurrentKey(panel, 10);
-	FormatEx(buffer, sizeof(buffer), "%t", "Exit");
-	DrawPanelItem(panel, buffer);
+	panel.CurrentKey = g_iMaxPageItems;
+	FormatEx(sBuffer, sizeof(sBuffer), "%t", "Exit");
+	panel.DrawItem(sBuffer);
 	
-	SendPanelToClient(panel, client, ItemTransPanel_Handler, MENU_TIME_FOREVER);
+	panel.Send(client, ItemTransPanel_Handler, MENU_TIME_FOREVER);
+	delete panel;
 }
 
-public ItemTransPanel_Handler(Handle:menu, MenuAction:action, param1, param2)
+public int ItemTransPanel_Handler(Menu menu, MenuAction action, int param1, int param2)
 {
 	switch (action)
 	{
@@ -1265,18 +1481,18 @@ public ItemTransPanel_Handler(Handle:menu, MenuAction:action, param1, param2)
 			{
 				case 1 :
 				{
-					new target = GetClientOfUserId(g_iItemTransTarget[param1]);
+					int target = GetClientOfUserId(g_iItemTransTarget[param1]);
 					if (!target)
 					{
 						ShowItemInfo(param1, iClItemId[param1]);
 						CPrintToChat(param1, "%t", "target_left_game");
-						return;
+						return 0;
 					}
 					
 					if (!Forward_OnItemTransfer(param1, target, iClItemId[param1]))
 					{
 						ShowItemInfo(param1, iClItemId[param1]);
-						return;
+						return 0;
 					}
 					
 					PlayerManager_TransferItem(param1, target, iClItemId[param1]);
@@ -1285,30 +1501,35 @@ public ItemTransPanel_Handler(Handle:menu, MenuAction:action, param1, param2)
 					
 					Forward_OnItemTransfered(param1, target, iClItemId[param1]);
 					
-					decl String:item[SHOP_MAX_STRING_LENGTH], String:category[SHOP_MAX_STRING_LENGTH];
+					char category[SHOP_MAX_STRING_LENGTH], item[SHOP_MAX_STRING_LENGTH];
 					ItemManager_GetItemDisplay(iClItemId[param1], target, item, sizeof(item));
 					ItemManager_GetCategoryDisplay(GetItemCategoryId(iClItemId[param1]), target, category, sizeof(category));
 					CPrintToChat(target, "%t", "receive_item", param1, category, item);
 					
 					ShowTransItemInfo(param1);
 				}
-				case 8 :
+				default :
 				{
-					SetupItemTransfer(param1);
+					if (param2 == g_iMaxPageItems-2)
+					{
+						SetupItemTransfer(param1);
+					}
 				}
 			}
 		}
 	}
+
+	return 0;
 }
 
-bool:FillMenuByItemTransTarget(Handle:menu, client, item_id)
+bool FillMenuByItemTransTarget(Menu menu, int client, int item_id)
 {
-	new ItemType:type = GetItemType(item_id);
+	ItemType type = GetItemType(item_id);
 	
-	new bool:result = false;
+	bool result = false;
 	
-	decl String:userid[9], String:buffer[MAX_NAME_LENGTH+21];
-	for (new i = 1; i <= MaxClients; i++)
+	char userid[9], sBuffer[MAX_NAME_LENGTH+21];
+	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (i != client && IsAuthorizedIn(i))
 		{
@@ -1316,20 +1537,20 @@ bool:FillMenuByItemTransTarget(Handle:menu, client, item_id)
 			
 			if (type == Item_Finite)
 			{
-				FormatEx(buffer, sizeof(buffer), "%N (%d)", i, PlayerManager_GetItemCount(i, item_id));
-				AddMenuItem(menu, userid, buffer);
+				FormatEx(sBuffer, sizeof(sBuffer), "%N (%d)", i, PlayerManager_GetItemCount(i, item_id));
+				menu.AddItem(userid, sBuffer);
 			}
 			else
 			{
 				if (ClientHasItem(i, item_id))
 				{
-					FormatEx(buffer, sizeof(buffer), "[+] %N", i);
-					AddMenuItem(menu, userid, buffer, ITEMDRAW_DISABLED);
+					FormatEx(sBuffer, sizeof(sBuffer), "[+] %N", i);
+					menu.AddItem(userid, sBuffer, ITEMDRAW_DISABLED);
 				}
 				else
 				{
-					GetClientName(i, buffer, sizeof(buffer));
-					AddMenuItem(menu, userid, buffer);
+					GetClientName(i, sBuffer, sizeof(sBuffer));
+					menu.AddItem(userid, sBuffer);
 				}
 			}
 			
@@ -1340,25 +1561,27 @@ bool:FillMenuByItemTransTarget(Handle:menu, client, item_id)
 	return result;
 }
 
-bool:BuyItem(client, item_id, bool:by_native)
+bool BuyItem(int client, int item_id, bool by_native)
 {
-	decl String:sItemId[16];
+	char sItemId[16];
 	IntToString(item_id, sItemId, sizeof(sItemId));
-	decl category_id, price, sell_price, count, duration, ItemType:type, String:item[SHOP_MAX_STRING_LENGTH];
+	int category_id, price, sell_price, count, duration;
+	ItemType type;
+	char item[SHOP_MAX_STRING_LENGTH];
 	
 	if (!ItemManager_GetItemInfoEx(sItemId, item, sizeof(item), category_id, price, sell_price, count, duration, type))
 	{
 		return false;
 	}
 	
-	decl String:category[SHOP_MAX_STRING_LENGTH];
+	char category[SHOP_MAX_STRING_LENGTH];
 	ItemManager_GetCategoryById(category_id, category, sizeof(category));
 	
-	new Action:result;
+	Action result;
 	
-	new default_price = price;
-	new default_sellprice = sell_price;
-	new default_value;
+	int default_price = price;
+	int default_sellprice = sell_price;
+	int default_value;
 	switch (type)
 	{
 		case Item_None, Item_Togglable :
@@ -1412,7 +1635,7 @@ bool:BuyItem(client, item_id, bool:by_native)
 	
 	if (type != Item_BuyOnly)
 	{
-		PlayerManager_GiveItemEx(client, sItemId, category_id, price, sell_price, count, duration, type);
+		PlayerManager_GiveItemEx(client, sItemId, category_id, price, sell_price, count, duration, duration, type);
 	}
 	
 	RemoveCredits(client, price, CREDITS_BY_BUY_OR_SELL);
@@ -1420,7 +1643,7 @@ bool:BuyItem(client, item_id, bool:by_native)
 	return true;
 }
 
-bool:RemoveItemEx(client, const String:sItemId[], count = 1)
+bool RemoveItemEx(int client, const char[] sItemId, int count = 1)
 {
 	if (IsItemToggledEx(client, sItemId))
 	{
@@ -1429,49 +1652,63 @@ bool:RemoveItemEx(client, const String:sItemId[], count = 1)
 	return PlayerManager_RemoveItemEx(client, sItemId, count);
 }
 
-bool:GiveItem(client, item_id)
+bool GiveItem(int client, int item_id)
 {
-	decl String:sItemId[16];
+	char sItemId[16];
 	IntToString(item_id, sItemId, sizeof(sItemId));
 	
 	return GiveItemEx(client, sItemId);
 }
 
-bool:GiveItemEx(client, const String:sItemId[])
+bool GiveItemEx(int client, const char[] sItemId)
 {
-	decl category_id, price, sell_price, count, duration, ItemType:type, String:item[SHOP_MAX_STRING_LENGTH];
+	int category_id, price, sell_price, count, duration;
+	ItemType type;
+	char item[SHOP_MAX_STRING_LENGTH];
 	
 	if (!ItemManager_GetItemInfoEx(sItemId, item, sizeof(item), category_id, price, sell_price, count, duration, type))
 	{
 		return false;
 	}
-	
-	if (type == Item_BuyOnly)
+
+	switch (type)
 	{
-		decl String:category[SHOP_MAX_STRING_LENGTH];
-		ItemManager_GetCategoryById(category_id, category, sizeof(category));
-		if (!ItemManager_OnItemBuyEx(client, category_id, category, StringToInt(sItemId), item, type, price, sell_price, (type == Item_Finite) ? count : duration))
+		case Item_BuyOnly :
 		{
-			return false;
+			char category[SHOP_MAX_STRING_LENGTH];
+			ItemManager_GetCategoryById(category_id, category, sizeof(category));
+			if (!ItemManager_OnItemBuyEx(client, category_id, category, StringToInt(sItemId), item, type, price, sell_price, count))
+			{
+				return false;
+			}
+			return true;
 		}
-		return true;
+		case Item_None, Item_Togglable :
+		{
+			if (ClientHasItemEx(client, sItemId))
+			{
+				return false;
+			}
+		}
 	}
 	
-	PlayerManager_GiveItemEx(client, sItemId, category_id, price, sell_price, count, duration, type);
+	PlayerManager_GiveItemEx(client, sItemId, category_id, price, sell_price, count, duration, duration, type);
 	
 	return true;
 }
 
-bool:SellItem(client, item_id)
+bool SellItem(int client, int item_id)
 {
 	if (!PlayerManager_ClientHasItem(client, item_id))
 	{
 		return false;
 	}
 	
-	decl String:sItemId[16];
+	char sItemId[16];
 	IntToString(item_id, sItemId, sizeof(sItemId));
-	decl category_id, price, sell_price, count, duration, ItemType:type, String:item[SHOP_MAX_STRING_LENGTH];
+	int category_id, price, sell_price, count, duration;
+	ItemType type;
+	char item[SHOP_MAX_STRING_LENGTH];
 	
 	if (!ItemManager_GetItemInfoEx(sItemId, item, sizeof(item), category_id, price, sell_price, count, duration, type))
 	{
@@ -1485,10 +1722,10 @@ bool:SellItem(client, item_id)
 		return false;
 	}
 	
-	decl String:category[SHOP_MAX_STRING_LENGTH];
+	char category[SHOP_MAX_STRING_LENGTH];
 	ItemManager_GetCategoryById(category_id, category, sizeof(category));
 	
-	new default_sellprice = sell_price;
+	int default_sellprice = sell_price;
 	switch (Forward_OnItemSell(client, category_id, category, item_id, item, type, sell_price))
 	{
 		case Plugin_Continue :
@@ -1521,26 +1758,26 @@ bool:SellItem(client, item_id)
 	return true;
 }
 
-PreviewItem(client, item_id)
+void PreviewItem(int client, int item_id)
 {
 	ItemManager_SetupPreview(client, item_id);
 }
 
-bool:ToggleItem(client, item_id, ToggleState:toggle, bool:by_native = false, bool:load = false)
+bool ToggleItem(int client, int item_id, ToggleState toggle, bool by_native = false, bool load = false)
 {
-	decl String:sItemId[16];
+	char sItemId[16];
 	IntToString(item_id, sItemId, sizeof(sItemId));
 	
 	return ToggleItemEx(client, sItemId, toggle, by_native, load);
 }
 
-bool:ToggleItemEx(client, const String:sItemId[], ToggleState:toggle, bool:by_native = false, bool:load = false)
+bool ToggleItemEx(int client, const char[] sItemId, ToggleState toggle, bool by_native = false, bool load = false)
 {
 	if (!PlayerManager_ClientHasItemEx(client, sItemId))
 	{
 		return false;
 	}
-	new ShopAction:action = ItemManager_OnUseToggleItemEx(client, sItemId, by_native, toggle);
+	ShopAction action = ItemManager_OnUseToggleItemEx(client, sItemId, by_native, toggle);
 	if (action == Shop_Raw)
 	{
 		return false;
@@ -1548,13 +1785,13 @@ bool:ToggleItemEx(client, const String:sItemId[], ToggleState:toggle, bool:by_na
 	return PlayerManager_ToggleItemEx(client, sItemId, action, load);
 }
 
-bool:UseItem(client, item_id, bool:by_native)
+bool UseItem(int client, int item_id, bool by_native)
 {
 	if (!PlayerManager_ClientHasItem(client, item_id))
 	{
 		return false;
 	}
-	new ShopAction:action = ItemManager_OnUseToggleItem(client, item_id, false, Toggle, true);
+	ShopAction action = ItemManager_OnUseToggleItem(client, item_id, false, Toggle, true);
 	if (action != Shop_Raw)
 	{
 		return PlayerManager_RemoveItem(client, item_id);
@@ -1566,7 +1803,7 @@ bool:UseItem(client, item_id, bool:by_native)
 	return false;
 }
 
-OnAuthorized(client)
+void OnAuthorized(int client)
 {
 	Forward_OnAuthorized(client);
 	if (g_sChatCommand[0])
@@ -1579,77 +1816,103 @@ OnAuthorized(client)
 	}
 }
 
-OnItemRegistered(item_id)
+void OnItemRegistered(int item_id)
 {
 	PlayerManager_OnItemRegistered(item_id);
 }
 
-OnItemUnregistered(item_id)
+void OnItemUnregistered(int item_id)
 {
 	PlayerManager_OnItemUnregistered(item_id);
 }
 
-GetItemCountEx(client, const String:sItemId[])
+int GetItemCountEx(int client, const char[] sItemId)
 {
 	return PlayerManager_GetItemCountEx(client, sItemId);
 }
 
-OnMenuTitle(client, ShopMenu:menu_action, const String:title[], String:buffer[], maxlength)
+void OnMenuTitle(int client, ShopMenu menu_action, const char[] title, char[] sBuffer, int maxlength)
 {
-	Forward_OnMenuTitle(client, menu_action, title, buffer, maxlength);
+	Forward_OnMenuTitle(client, menu_action, title, sBuffer, maxlength);
 }
 
-GetItemDurationEx(const String:sItemId[])
+int GetItemDurationEx(const char[] sItemId)
 {
 	return ItemManager_GetItemDurationEx(sItemId);
 }
 
-ItemType:GetItemType(item_id)
+ItemType GetItemType(int item_id)
 {
 	return ItemManager_GetItemType(item_id);
 }
 
-ItemType:GetItemTypeEx(const String:sItemId[])
+ItemType GetItemTypeEx(const char[] sItemId)
 {
 	return ItemManager_GetItemTypeEx(sItemId);
 }
 
-GetRandomIntEx(min, max)
+int GetRandomIntEx(int min, int max)
 {
 	return Helpers_GetRandomIntEx(min, max);
 }
 
-bool:ClientHasItem(client, item_id)
+bool ClientHasItem(int client, int item_id)
 {
 	return PlayerManager_ClientHasItem(client, item_id);
 }
 
-bool:ClientHasItemEx(client, const String:sItemId[])
+bool ClientHasItemEx(int client, const char[] sItemId)
 {
 	return PlayerManager_ClientHasItemEx(client, sItemId);
 }
 
-GetClientCategorySize(client, category_id)
+int GetClientCategorySize(int client, int category_id)
 {
 	return PlayerManager_GetClientCategorySize(client, category_id);
 }
 
-GetCredits(client)
+int GetCredits(int client)
 {
 	return PlayerManager_GetCredits(client);
 }
 
-SetCredits(client, credits, bool:by_admin = false)
+bool SetCredits(int client, int credits, int by_who)
 {
+	if (credits < 1)
+	{
+		return false;
+	}
+
+	if (by_who != IGNORE_FORWARD_HOOK)
+	{
+		int dummy = credits;
+		
+		switch (Forward_OnCreditsSet(client, credits, by_who))
+		{
+			case Plugin_Continue :
+			{
+				credits = dummy;
+			}
+			case Plugin_Handled, Plugin_Stop :
+			{
+				return false;
+			}
+		}
+	}
+
 	PlayerManager_SetCredits(client, credits);
+
+	Forward_OnCreditsSet_Post(client, credits, by_who);
 	
-	if (by_admin)
+	if (by_who > 0)
 	{
 		CPrintToChat(client, "%t", "set_you_credits", credits);
 	}
+	
+	return true;
 }
 
-RemoveCredits(client, credits, by_who)
+int RemoveCredits(int client, int credits, int by_who)
 {
 	if (!PlayerManager_IsAuthorizedIn(client))
 	{
@@ -1662,7 +1925,7 @@ RemoveCredits(client, credits, by_who)
 	
 	if (by_who != IGNORE_FORWARD_HOOK)
 	{
-		new dummy = credits;
+		int dummy = credits;
 		
 		switch (Forward_OnCreditsTaken(client, credits, by_who))
 		{
@@ -1679,6 +1942,8 @@ RemoveCredits(client, credits, by_who)
 	
 	PlayerManager_RemoveCredits(client, credits);
 	
+	Forward_OnCreditsTaken_Post(client, credits, by_who);
+	
 	if (by_who > 0)
 	{
 		CPrintToChat(client, "%t", "take_you_credits", credits);
@@ -1687,7 +1952,7 @@ RemoveCredits(client, credits, by_who)
 	return credits;
 }
 
-GiveCredits(client, credits, by_who)
+int GiveCredits(int client, int credits, int by_who)
 {
 	if (!PlayerManager_IsAuthorizedIn(client))
 	{
@@ -1700,7 +1965,7 @@ GiveCredits(client, credits, by_who)
 	
 	if (by_who != IGNORE_FORWARD_HOOK)
 	{
-		new dummy = credits;
+		int dummy = credits;
 		
 		switch (Forward_OnCreditsGiven(client, credits, by_who))
 		{
@@ -1716,6 +1981,8 @@ GiveCredits(client, credits, by_who)
 	}
 	
 	PlayerManager_GiveCredits(client, credits);
+
+	Forward_OnCreditsGiven_Post(client, credits, by_who);
 	
 	if (by_who > 0)
 	{
@@ -1725,62 +1992,62 @@ GiveCredits(client, credits, by_who)
 	return credits;
 }
 
-bool:IsAuthorizedIn(client)
+bool IsAuthorizedIn(int client)
 {
 	return PlayerManager_IsAuthorizedIn(client);
 }
 
-bool:IsAdmin(client)
+bool IsAdmin(int client)
 {
-	return bool:(GetUserFlagBits(client) & g_iAdminFlags);
+	return view_as<bool>(GetUserFlagBits(client) & g_iAdminFlags);
 }
 
-bool:FillCategories(Handle:menu, source_client, bool:inventory = false)
+bool FillCategories(Menu menu, int source_client, ShopMenu shop_menu, bool showAll = false)
 {
-	return ItemManager_FillCategories(menu, source_client, inventory);
+	return ItemManager_FillCategories(menu, source_client, shop_menu, showAll);
 }
 
-bool:FillItemsOfCategory(Handle:menu, client, source_client, category_id)
+bool FillItemsOfCategory(Menu menu, int client, int source_client, int category_id, ShopMenu shop_menu, bool showAll = false)
 {
-	return ItemManager_FillItemsOfCategory(menu, client, source_client, category_id);
+	return ItemManager_FillItemsOfCategory(menu, client, source_client, category_id, shop_menu, showAll);
 }
 
-GetItemCategoryId(item_id)
+int GetItemCategoryId(int item_id)
 {
 	return ItemManager_GetItemCategoryId(item_id);
 }
 
-GetItemCategoryIdEx(String:sItemId[])
+int GetItemCategoryIdEx(char[] sItemId)
 {
 	return ItemManager_GetItemCategoryIdEx(sItemId);
 }
 
-bool:AddTargetsToMenu(Handle:menu, source_client, bool:credits = false)
+bool AddTargetsToMenu(Menu menu, int source_client, bool credits = false)
 {
 	return Helpers_AddTargetsToMenu(menu, source_client, credits);
 }
 
-bool:IsItemToggledEx(client, const String:sItemId[])
+bool IsItemToggledEx(int client, const char[] sItemId)
 {
 	return PlayerManager_IsItemToggledEx(client, sItemId);
 }
 
-stock bool:IsItemExists(item_id)
+stock bool IsItemExists(int item_id)
 {
 	return ItemManager_IsItemExists(item_id);
 }
 
-bool:IsItemExistsEx(String:sItemId[])
+bool IsItemExistsEx(char[] sItemId)
 {
 	return ItemManager_IsItemExistsEx(sItemId);
 }
 
-bool:IsStarted()
+bool IsStarted()
 {
 	return is_started;
 }
 
-OnPlayerItemElapsed(client, item_id, bool:notify = true)
+void OnPlayerItemElapsed(int client, int item_id, bool notify = true)
 {
 	ItemManager_OnPlayerItemElapsed(client, item_id);
 	
@@ -1789,7 +2056,7 @@ OnPlayerItemElapsed(client, item_id, bool:notify = true)
 		OnItemDequipped(client, item_id);
 	}
 	
-	decl String:category[SHOP_MAX_STRING_LENGTH], String:item[SHOP_MAX_STRING_LENGTH];
+	char category[SHOP_MAX_STRING_LENGTH], item[SHOP_MAX_STRING_LENGTH];
 	GetCategoryDisplay(GetItemCategoryId(item_id), client, category, sizeof(category));
 	GetItemDisplay(item_id, client, item, sizeof(item));
 	
@@ -1799,127 +2066,143 @@ OnPlayerItemElapsed(client, item_id, bool:notify = true)
 	}
 }
 
-bool:OnItemDisplay(client, ShopMenu:menu_action, category_id, item_id, const String:display[], String:buffer[], maxlength)
+bool OnItemDisplay(int client, ShopMenu menu_action, int category_id, int item_id, const char[] display, char[] sBuffer, int maxlength)
 {
-	return Forward_OnItemDisplay(client, menu_action, category_id, item_id, display, buffer, maxlength);
+	return Forward_OnItemDisplay(client, menu_action, category_id, item_id, display, sBuffer, maxlength);
 }
 
-bool:OnItemDescription(client, ShopMenu:menu_action, category_id, item_id, const String:display[], String:buffer[], maxlength)
+bool OnItemDescription(int client, ShopMenu menu_action, int category_id, int item_id, const char[] display, char[] sBuffer, int maxlength)
 {
-	return Forward_OnItemDescription(client, menu_action, category_id, item_id, display, buffer, maxlength);
+	return Forward_OnItemDescription(client, menu_action, category_id, item_id, display, sBuffer, maxlength);
 }
 
-CallItemElapsedForward(client, category_id, String:category[], item_id, String:item[])
+void CallItemElapsedForward(int client, int category_id, char[] category, int item_id, char[] item)
 {
 	Forward_OnItemElapsed(client, category_id, category, item_id, item);
 }
 
-stock FillArrayByItems(Handle:array)
+stock int FillArrayByItems(ArrayList array)
 {
 	return ItemManager_FillArrayByItems(array);
 }
 
-bool:GetCategoryDisplay(category_id, source_client, String:buffer[], maxlength)
+bool GetCategoryDisplay(int category_id, int source_client, char[] sBuffer, int maxlength)
 {
-	return ItemManager_GetCategoryDisplay(category_id, source_client, buffer, maxlength);
+	return ItemManager_GetCategoryDisplay(category_id, source_client, sBuffer, maxlength);
 }
 
-bool:GetItemDisplay(item_id, source_client, String:buffer[], maxlength)
+bool GetItemDisplay(int item_id, int source_client, char[] sBuffer, int maxlength)
 {
-	return ItemManager_GetItemDisplay(item_id, source_client, buffer, maxlength);
+	return ItemManager_GetItemDisplay(item_id, source_client, sBuffer, maxlength);
 }
 
-OnItemEquipped(client, item_id)
+void OnItemEquipped(int client, int item_id)
 {
-	decl String:sItemId[16];
+	char sItemId[16];
 	IntToString(item_id, sItemId, sizeof(sItemId));
-	decl category_id, price, sell_price, count, duration, ItemType:type, String:item[SHOP_MAX_STRING_LENGTH];
+	int category_id, price, sell_price, count, duration;
+	ItemType type;
+	char item[SHOP_MAX_STRING_LENGTH];
 	if (!ItemManager_GetItemInfoEx(sItemId, item, sizeof(item), category_id, price, sell_price, count, duration, type))
 	{
 		return;
 	}
-	decl String:category[SHOP_MAX_STRING_LENGTH];
+	char category[SHOP_MAX_STRING_LENGTH];
 	ItemManager_GetCategoryById(category_id, category, sizeof(category));
 	
 	Forward_OnItemToggled(client, category_id, category, item_id, item, Toggle_On);
 }
 
-OnItemDequipped(client, item_id)
+void OnItemDequipped(int client, int item_id)
 {
-	decl String:sItemId[16];
+	char sItemId[16];
 	IntToString(item_id, sItemId, sizeof(sItemId));
-	decl category_id, price, sell_price, count, duration, ItemType:type, String:item[SHOP_MAX_STRING_LENGTH];
+	int category_id, price, sell_price, count, duration;
+	ItemType type;
+	char item[SHOP_MAX_STRING_LENGTH];
 	if (!ItemManager_GetItemInfoEx(sItemId, item, sizeof(item), category_id, price, sell_price, count, duration, type))
 	{
 		return;
 	}
-	decl String:category[SHOP_MAX_STRING_LENGTH];
+	char category[SHOP_MAX_STRING_LENGTH];
 	ItemManager_GetCategoryById(category_id, category, sizeof(category));
 	
 	Forward_OnItemToggled(client, category_id, category, item_id, item, Toggle_Off);
 }
 
-bool:OnLuckProcess(client)
+int GetItemLuckChance(int item_id)
 {
-	return Forward_OnLuckProcess(client);
+	return ItemManager_GetLuckChance(item_id);
 }
 
-bool:OnItemLuck(client, item_id)
+bool OnClientLuckProcess(int client)
 {
-	return Forward_OnItemLuck(client, item_id);
+	return Forward_OnClientLuckProcess(client);
 }
 
-OnItemLucked(client, item_id)
+Action OnClientShouldLuckItemChance(int client, int item_id, int &iLuckChance)
 {
-	Forward_OnItemLucked(client, item_id);
+	return Forward_OnClientShouldLuckItemChance(client, item_id, iLuckChance);
 }
 
-Action:OnCreditsTransfer(client, target, &credits_give, &credits_remove)
+void OnClientItemLucked(int client, int item_id)
 {
-	return Forward_OnCreditsTransfer(client, target, credits_give, credits_remove);
+	Forward_OnClientItemLucked(client, item_id);
 }
 
-OnCreditsTransfered(client, target, credits_give, credits_remove)
+Action OnCreditsTransfer(int client, int target, int &credits_give, int &credits_remove, int &credits_commission, bool bPercent)
 {
-	Forward_OnCreditsTransfered(client, target, credits_give, credits_remove);
+	return Forward_OnCreditsTransfer(client, target, credits_give, credits_remove, credits_commission, bPercent);
 }
 
-TryConnect()
+void OnCreditsTransfered(int client, int target, int credits_give, int credits_remove, int credits_commission)
+{
+	Forward_OnCreditsTransfered(client, target, credits_give, credits_remove, credits_commission);
+}
+
+void TryConnect()
 {
 	DB_TryConnect();
 }
 
-bool:IsPluginValid(Handle:plugin)
+bool IsCallValid(Handle plugin, Function ptrFunction) {
+	return (
+		ptrFunction != INVALID_FUNCTION &&
+		Helpers_IsPluginValid(plugin)
+	);
+}
+
+bool IsPluginValid(Handle plugin)
 {
 	return Helpers_IsPluginValid(plugin);
 }
 
-GetTimeFromStamp(String:buffer[], maxlength, timestamp, source_client)
+void GetTimeFromStamp(char[] sBuffer, int maxlength, int timestamp, int source_client)
 {
-	Helpers_GetTimeFromStamp(buffer, maxlength, timestamp, source_client);
+	Helpers_GetTimeFromStamp(sBuffer, maxlength, timestamp, source_client);
 }
 
-stock FastQuery(const String:query[])
+stock void FastQuery(const char[] query)
 {
 	DB_FastQuery(query);
 }
 
-TQuery(SQLTCallback:callback, const String:query[], any:data, DBPriority:prio = DBPrio_Normal)
+void TQuery(SQLQueryCallback callback, const char[] query, any data = 0, DBPriority prio = DBPrio_Normal)
 {
 	DB_TQuery(callback, query, data, prio);
 }
 
-TQueryEx(const String:query[], DBPriority:prio = DBPrio_Normal)
+void TQueryEx(const char[] query, DBPriority prio = DBPrio_Normal)
 {
 	DB_TQueryEx(query, prio);
 }
 
-EscapeString(const String:string[], String:buffer[], maxlength, &written = 0)
+void EscapeString(const char[] string, char[] sBuffer, int maxlength, int &written = 0)
 {
-	DB_EscapeString(string, buffer, maxlength, written);
+	DB_EscapeString(string, sBuffer, maxlength, written);
 }
 
-bool:CheckClient(client, String:error[], length)
+bool CheckClient(int client, char[] error, int length)
 {
 	return Helpers_CheckClient(client, error, length);
 }
